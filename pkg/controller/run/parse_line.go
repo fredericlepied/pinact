@@ -14,10 +14,11 @@ import (
 )
 
 var (
-	usesPattern          = regexp.MustCompile(`^( *(?:- )?['"]?uses['"]? *: +)(['"]?)(.*?)@([^ '"]+)['"]?(?:( +# +(?:tag=)?)(v?\d+[^ ]*)(.*))?`)
+	usesPattern          = regexp.MustCompile(`^( *(?:- )?['"]?uses['"]? *: +)(['"]?)(.*?)@([^ '"]+)['"]?(?:( +# +(?:tag=)?)([^\s]+)(.*))?`)
 	fullCommitSHAPattern = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
 	semverPattern        = regexp.MustCompile(`^v?\d+\.\d+\.\d+[^ ]*$`)
 	shortTagPattern      = regexp.MustCompile(`^v?\d+(\.\d+)?$`)
+	refPattern           = regexp.MustCompile(`^[0-9A-Za-z._/-]+$`)
 )
 
 type Action struct {
@@ -211,7 +212,7 @@ func (c *Controller) parseLine(ctx context.Context, logE *logrus.Entry, line str
 		return c.parseShortSemverTagLine(ctx, logE, action)
 	default:
 		if getVersionType(action.Version) == FullCommitSHA {
-			return "", nil
+			return c.parseRefTagLine(ctx, logE, action)
 		}
 		return "", ErrCantPinned
 	}
@@ -233,6 +234,16 @@ func (c *Controller) parseNoTagLine(ctx context.Context, logE *logrus.Entry, act
 	case Shortsemver, Semver:
 	case FullCommitSHA:
 		return "", nil
+	case Other:
+		// Try to resolve branch references like "main", "master", "develop", etc.
+		// to their current commit SHA for security pinning
+		sha, _, err := c.repositoriesService.GetCommitSHA1(ctx, action.RepoOwner, action.RepoName, action.Version, "")
+		if err != nil {
+			// If we can't resolve it, it's not pinnable
+			return "", ErrCantPinned
+		}
+		// Successfully resolved branch to commit SHA
+		return patchLine(action, sha, action.Version), nil
 	default:
 		return "", ErrCantPinned
 	}
@@ -380,6 +391,34 @@ func (c *Controller) parseShortSemverTagLine(ctx context.Context, logE *logrus.E
 		return "", nil
 	}
 	return patchLine(action, action.Version, longVersion), nil
+}
+
+// parseRefTagLine processes pinned actions whose version annotation isn't semver.
+// This is typically used for branches (e.g. "@<sha> # main"). The annotation value
+// is treated as a ref so the current SHA can be fetched and refreshed if it changed.
+func (c *Controller) parseRefTagLine(ctx context.Context, logE *logrus.Entry, action *Action) (string, error) {
+	if action.VersionComment == "" {
+		return "", nil
+	}
+	if action.Suffix != "" {
+		return "", nil
+	}
+	if strings.ContainsAny(action.VersionComment, " \t\r\n") {
+		logE.WithField("version_annotation", action.VersionComment).Debug("skip updating non-semver annotation because it isn't a ref")
+		return "", nil
+	}
+	if !refPattern.MatchString(action.VersionComment) {
+		logE.WithField("version_annotation", action.VersionComment).Debug("skip updating non-semver annotation because it isn't a ref")
+		return "", nil
+	}
+	sha, _, err := c.repositoriesService.GetCommitSHA1(ctx, action.RepoOwner, action.RepoName, action.VersionComment, "")
+	if err != nil {
+		return "", fmt.Errorf("get a reference: %w", err)
+	}
+	if sha == action.Version {
+		return "", nil
+	}
+	return patchLine(action, sha, action.VersionComment), nil
 }
 
 // patchLine reconstructs a workflow line with updated version and tag.

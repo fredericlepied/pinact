@@ -103,6 +103,17 @@ func Test_parseAction(t *testing.T) { //nolint:funlen
 				Quote:                   "",
 			},
 		},
+		{
+			name: "branch comment",
+			line: "        - uses: depends-on/depends-on-action@1234567890abcdef1234567890abcdef12345678 # main",
+			exp: &Action{
+				Uses:                    "        - uses: ",
+				Name:                    "depends-on/depends-on-action",
+				Version:                 "1234567890abcdef1234567890abcdef12345678",
+				VersionCommentSeparator: " # ",
+				VersionComment:          "main",
+			},
+		},
 	}
 	for _, d := range data {
 		t.Run(d.name, func(t *testing.T) {
@@ -151,6 +162,21 @@ func TestController_parseLine(t *testing.T) { //nolint:funlen
 			name: "checkout v2 (single quote)",
 			line: `  "uses": 'actions/checkout@v2'`,
 			exp:  `  "uses": 'actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5' # v2.7.0`,
+		},
+		{
+			name: "branch reference main",
+			line: "        - uses: depends-on/depends-on-action@main",
+			exp:  "        - uses: depends-on/depends-on-action@1234567890abcdef1234567890abcdef12345678 # main",
+		},
+		{
+			name: "branch reference main pinned to old sha",
+			line: "        - uses: depends-on/depends-on-action@abcdef1234567890abcdef1234567890abcdef12 # main",
+			exp:  "        - uses: depends-on/depends-on-action@1234567890abcdef1234567890abcdef12345678 # main",
+		},
+		{
+			name: "branch reference master",
+			line: "        - uses: actions/setup-go@master",
+			exp:  "        - uses: actions/setup-go@fedcba0987654321fedcba0987654321fedcba09 # master",
 		},
 	}
 	logE := logrus.NewEntry(logrus.New())
@@ -202,6 +228,12 @@ func TestController_parseLine(t *testing.T) { //nolint:funlen
 					},
 					"actions/checkout/v2": {
 						SHA: "ee0669bd1cc54295c223e0bb666b733df41de1c5",
+					},
+					"depends-on/depends-on-action/main": {
+						SHA: "1234567890abcdef1234567890abcdef12345678",
+					},
+					"actions/setup-go/master": {
+						SHA: "fedcba0987654321fedcba0987654321fedcba09",
 					},
 				},
 			}, nil, fs, config.NewFinder(fs), config.NewReader(fs), &ParamRun{})
